@@ -1,10 +1,10 @@
-import re
 from datetime import date
+import re
 
 from dateutil import relativedelta
 from django.apps import apps as django_apps
 from edc_base.utils import age, get_utcnow
-from edc_constants.constants import IND, NEG, PENDING, POS, UNK, YES
+from edc_constants.constants import IND, NEG, POS, UNK, YES
 from edc_metadata_rules import PredicateCollection
 from edc_reference.models import Reference
 
@@ -80,7 +80,7 @@ class CaregiverPredicates(PredicateCollection):
             return False
         else:
             return True
-        
+
     def child_gt10(self, visit):
 
         onschedule_model = django_apps.get_model(
@@ -118,7 +118,7 @@ class CaregiverPredicates(PredicateCollection):
                     if (child_age <= 15.9 and child_age >= 10):
                         return [True, child_subject_identifier]
         return [False, child_subject_identifier]
-    
+
     def func_child_age(self, visit=None, **kwargs):
         onschedule_model = django_apps.get_model(
             visit.appointment.schedule.onschedule_model)
@@ -155,33 +155,36 @@ class CaregiverPredicates(PredicateCollection):
     def func_child_age_gte10(self, visit, **kwargs):
         child_age = self.func_child_age(visit=visit, **kwargs)
         return child_age.years >= 10 if child_age else False
-    
+
     def func_gt10_and_after_a_year(self, visit, **kwargs):
         # return child_age.years >= 10 if child_age else False
-        relationship_scale_cls = django_apps.get_model('flourish_caregiver.parentadolrelationshipscale')
+        relationship_scale_cls = django_apps.get_model(
+            'flourish_caregiver.parentadolrelationshipscale')
         is_gte_10 = self.func_child_age_gte10(visit, **kwargs)
 
         relationship_scale_objs = relationship_scale_cls.objects.filter(
-            maternal_visit__subject_identifier = visit.subject_identifier)
-        
+            maternal_visit__subject_identifier=visit.subject_identifier)
+
         result = False
 
-        #show crf if it doesn't exist at all
+        # show crf if it doesn't exist at all
         if not relationship_scale_objs.exists():
             result = is_gte_10
         else:
-            # show again after 4 visits from the latest 
-            relationship_scale_obj = relationship_scale_objs.latest('report_datetime')
+            # show again after 4 visits from the latest
+            relationship_scale_obj = relationship_scale_objs.latest(
+                'report_datetime')
             visit_code = relationship_scale_obj.visit_code
 
-            calculated_visit_code = int(re.search(r'\d+', visit_code).group())+4
-            
+            calculated_visit_code = int(
+                re.search(r'\d+', visit_code).group())+4
+
             next_visit_code = f'{calculated_visit_code}{visit_code[-1]}'
 
-            result =  next_visit_code==visit.visit_code and is_gte_10
+            result = next_visit_code == visit.visit_code and is_gte_10
 
         return result
-        
+
     def prior_participation(self, visit=None, **kwargs):
         maternal_dataset_model = django_apps.get_model(
             f'{self.app_label}.maternaldataset')
@@ -549,21 +552,79 @@ class CaregiverPredicates(PredicateCollection):
                 return True
         return False
 
-    def func_caregiver_tb_screening(self, visit=None, **kwargs):
-        """Returns true if caregiver TB screening crf is required
+    def func_caregiver_tb_referral_outcome(self, visit=None, **kwargs):
+        """Returns true if caregiver TB referral outcome crf is required
+        """
+        prev_caregiver_tb_referral_objs = Reference.objects.filter(
+            model=f'{self.app_label}.tbreferralcaregiver',
+            report_datetime__lt=visit.report_datetime,
+            identifier=visit.subject_identifier, )
+        prev_caregiver_tb_referral_outcome_objs = Reference.objects.filter(
+            model=f'{self.app_label}.caregivertbreferraloutcome',
+            report_datetime__lt=visit.report_datetime,
+            identifier=visit.subject_identifier, )
+
+        if prev_caregiver_tb_referral_objs.exists():
+            return prev_caregiver_tb_referral_objs.count() > \
+                prev_caregiver_tb_referral_outcome_objs.count()
+        return False
+
+    def func_caregiver_tb_referral_required(self, visit=None, **kwargs):
+        """Returns true if caregiver TB referral crf is required
         """
         caregiver_tb_screening_model_cls = django_apps.get_model(
             f'{self.app_label}.caregivertbscreening')
-        latest_obj = caregiver_tb_screening_model_cls.objects.filter(
-            maternal_visit__subject_identifier=visit.subject_identifier
-        ).order_by('-report_datetime').first()
-        tests = ['chest_xray_results',
-                 'sputum_sample_results',
-                 'blood_test_results',
-                 'urine_test_results',
-                 'skin_test_results']
-        return any([getattr(latest_obj, field, None) == PENDING
-                    for field in tests]) if latest_obj else True
+        try:
+            visit_obj = caregiver_tb_screening_model_cls.objects.get(
+                maternal_visit=visit
+            )
+        except caregiver_tb_screening_model_cls.DoesNotExist:
+            return False
+        else:
+            return visit_obj.tb_diagnoses
+
+    def func_caregiver_social_work_referral_required(self, visit=None, **kwargs):
+        """Returns true if caregiver Social _work referral crf is required
+        """
+        caregiver_cage_aid_model_cls = django_apps.get_model(
+            f'{self.app_label}.caregivercageaid')
+        try:
+            cage_obj = caregiver_cage_aid_model_cls.objects.get(
+                maternal_visit=visit
+            )
+
+        except caregiver_cage_aid_model_cls.DoesNotExist:
+            pass
+        else:
+            return (
+                cage_obj.alcohol_drugs == YES or
+                cage_obj.cut_down == YES or
+                cage_obj.people_reaction == YES or
+                cage_obj.guilt == YES or
+                cage_obj.eye_opener == YES
+
+            )
+        return False
+
+    def func_counselling_referral(self, visit=None, **kwargs):
+        """Returns true if couselling_referral is yes
+        """
+        relationship_with_father_cls = django_apps.get_model(
+            f'{self.app_label}.relationshipfatherinvolvement')
+        try:
+            relationship_with_father_obj = relationship_with_father_cls.objects.get(
+                maternal_visit=visit)
+        except relationship_with_father_cls.DoesNotExist:
+            pass
+        else:
+            return relationship_with_father_obj.conunselling_referral == YES
+        return False
+
+    def func_caregiver_social_work_referral_required_relation(self, visit=None, **kwargs):
+        """Returns true if caregiver Social _work referral crf is required
+        """
+        return (self.func_caregiver_social_work_referral_required(visit=visit) or
+                self.func_counselling_referral(visit=visit))
 
     def func_show_breast_milk_crf(self, visit=None, **kwargs):
         """ Returns true if participant is breastfeeding of breastfeeding and formula
