@@ -134,7 +134,7 @@ class ChildVisitRuleGroup(CrfRuleGroup):
         predicate=pc.func_child_tb_referral_outcome,
         consequence=REQUIRED,
         alternative=NOT_REQUIRED,
-        target_models=[f'{app_label}.childtbreferraloutcome', ]
+        target_models=[f'{app_label}.childtbreferraloutcome',]
     )
 
     infant_hiv_testing = CrfRule(
@@ -148,13 +148,6 @@ class ChildVisitRuleGroup(CrfRuleGroup):
         consequence=REQUIRED,
         alternative=NOT_REQUIRED,
         target_models=[f'{app_label}.childsafistigma', ])
-
-    childhood_lead_exposure_risk = CrfRule(
-        predicate=pc.func_childhood_lead_exposure_risk_required,
-        consequence=REQUIRED,
-        alternative=NOT_REQUIRED,
-        target_models=[f'{app_label}.childhoodleadexposurerisk', ]
-    )
 
     class Meta:
         app_label = app_label

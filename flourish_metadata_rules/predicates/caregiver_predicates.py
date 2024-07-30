@@ -1,16 +1,18 @@
-from datetime import date
 import re
+from datetime import date
 
 from dateutil import relativedelta
 from django.apps import apps as django_apps
 from edc_base.utils import age, get_utcnow
-from edc_constants.constants import IND, NEG, POS, UNK, YES
+from edc_constants.constants import IND, NEG, PENDING, POS, UNK, YES
 from edc_metadata_rules import PredicateCollection
 from edc_reference.models import Reference
 
 from flourish_caregiver.constants import BREASTFEED_ONLY
 from flourish_caregiver.helper_classes import MaternalStatusHelper
-from flourish_caregiver.helper_classes.utils import get_child_subject_identifier_by_visit
+from flourish_caregiver.helper_classes.utils import (
+    get_child_subject_identifier_by_visit, \
+    get_schedule_names)
 
 
 def get_difference(birth_date=None):
@@ -177,7 +179,7 @@ class CaregiverPredicates(PredicateCollection):
             visit_code = relationship_scale_obj.visit_code
 
             calculated_visit_code = int(
-                re.search(r'\d+', visit_code).group())+4
+                re.search(r'\d+', visit_code).group()) + 4
 
             next_visit_code = f'{calculated_visit_code}{visit_code[-1]}'
 
@@ -445,8 +447,8 @@ class CaregiverPredicates(PredicateCollection):
                             child_age = age(
                                 child_consent.child_dob, get_utcnow())
                             child_age_in_months = ((
-                                child_age.years * 12) +
-                                child_age.months)
+                                                           child_age.years * 12) +
+                                                   child_age.months)
                             if child_age_in_months < 2:
                                 try:
                                     last_tb_bj = tb_screening_form_objs.latest(
@@ -475,13 +477,13 @@ class CaregiverPredicates(PredicateCollection):
             return False
         else:
             take_off_schedule = (
-                visit_screening.have_cough == YES or
-                visit_screening.cough_duration == '=>2 week' or
-                visit_screening.fever == YES or
-                visit_screening.night_sweats == YES or
-                visit_screening.weight_loss == YES or
-                visit_screening.cough_blood == YES or
-                visit_screening.enlarged_lymph_nodes == YES
+                    visit_screening.have_cough == YES or
+                    visit_screening.cough_duration == '=>2 week' or
+                    visit_screening.fever == YES or
+                    visit_screening.night_sweats == YES or
+                    visit_screening.weight_loss == YES or
+                    visit_screening.cough_blood == YES or
+                    visit_screening.enlarged_lymph_nodes == YES
             )
             return take_off_schedule
 
@@ -552,6 +554,22 @@ class CaregiverPredicates(PredicateCollection):
                 return True
         return False
 
+    def func_caregiver_tb_screening(self, visit=None, **kwargs):
+        """Returns true if caregiver TB screening crf is required
+        """
+        caregiver_tb_screening_model_cls = django_apps.get_model(
+            f'{self.app_label}.caregivertbscreening')
+        latest_obj = caregiver_tb_screening_model_cls.objects.filter(
+            maternal_visit__subject_identifier=visit.subject_identifier
+        ).order_by('-report_datetime').first()
+        tests = ['chest_xray_results',
+                 'sputum_sample_results',
+                 'blood_test_results',
+                 'urine_test_results',
+                 'skin_test_results']
+        return any([getattr(latest_obj, field, None) == PENDING
+                    for field in tests]) if latest_obj else True
+
     def func_caregiver_tb_referral_outcome(self, visit=None, **kwargs):
         """Returns true if caregiver TB referral outcome crf is required
         """
@@ -597,17 +615,17 @@ class CaregiverPredicates(PredicateCollection):
             pass
         else:
             return (
-                cage_obj.alcohol_drugs == YES or
-                cage_obj.cut_down == YES or
-                cage_obj.people_reaction == YES or
-                cage_obj.guilt == YES or
-                cage_obj.eye_opener == YES
+                    cage_obj.alcohol_drugs == YES or
+                    cage_obj.cut_down == YES or
+                    cage_obj.people_reaction == YES or
+                    cage_obj.guilt == YES or
+                    cage_obj.eye_opener == YES
 
             )
         return False
 
     def func_counselling_referral(self, visit=None, **kwargs):
-        """Returns true if couselling_referral is yes
+        """Returns true if counselling_referral is yes
         """
         relationship_with_father_cls = django_apps.get_model(
             f'{self.app_label}.relationshipfatherinvolvement')
@@ -645,3 +663,35 @@ class CaregiverPredicates(PredicateCollection):
                 return (birth_form_obj.feeding_mode == BREASTFEED_ONLY or
                         birth_form_obj.feeding_mode == 'Both breastfeeding and formula '
                                                        'feeding')
+
+    def func_childhood_lead_exposure_risk_required(self, visit=None, **kwargs):
+        model = django_apps.get_model(f'{self.app_label}.childhoodleadexposurerisk')
+        appointment = visit.appointment
+
+        schedule_names = get_schedule_names(appointment)
+
+        previous_appts = appointment.__class__.objects.filter(
+            subject_identifier=appointment.subject_identifier,
+            appt_datetime__lt=appointment.appt_datetime,
+            schedule_name__in=schedule_names,
+            visit_code_sequence=0).order_by('-timepoint_datetime')
+
+        for apt in previous_appts:
+            prev_instance = model.objects.filter(
+                maternal_visit__appointment=apt)
+            if not prev_instance.exists():
+                continue
+
+            prev_visit_code = prev_instance[0].maternal_visit.visit_code
+
+            return (int(visit.visit_code[:4]) - 4) == int(prev_visit_code[:4])
+
+        is_follow_up = '300' in visit.visit_code
+
+        child_age = self.func_child_age(visit=visit)
+        if child_age:
+            child_age = child_age.years + (child_age.months / 12)
+
+        is_valid_age = not 1 < child_age < 5 if child_age is not None else False
+
+        return False if is_valid_age else is_follow_up

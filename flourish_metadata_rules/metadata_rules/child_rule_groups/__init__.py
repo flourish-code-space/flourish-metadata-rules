@@ -1,3 +1,4 @@
+from .child_cage_aid_rules import ChildCageAidRuleGroup
 from .child_conginetal_anomalies_rules import CongenitalAnomaliesRuleGroup
 from .child_gad_anxiety_referral_rules import ChildGAD7ReferralRuleGroup
 from .child_gad_anxiety_screening_rules import ChildGAD7AnxietyScreeningRuleGroup

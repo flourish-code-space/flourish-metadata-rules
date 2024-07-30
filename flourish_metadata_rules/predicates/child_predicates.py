@@ -1,10 +1,10 @@
 from datetime import timedelta
+from dateutil.relativedelta import relativedelta
 
-import pytz
 from django.apps import apps as django_apps
 from django.db.models import Q
 from edc_base.utils import age, get_utcnow
-from edc_constants.constants import FEMALE, IND, NO, OTHER, PENDING, POS, UNKNOWN, YES
+from edc_constants.constants import FEMALE, IND, NO,OTHER, PENDING, POS, YES
 from edc_metadata_rules import PredicateCollection
 from edc_reference.models import Reference
 
@@ -523,7 +523,7 @@ class ChildPredicates(PredicateCollection):
             hiv_test_6wks_post_wean = self.infant_hiv_test_model_cls.objects.filter(
                 child_visit__subject_identifier=child_subject_identifier,
                 received_date__gte=infant_feeding_crf.dt_weaned +
-                                   timedelta(weeks=6)
+                timedelta(weeks=6)
             ).exists()
 
         child_age = self.get_child_age(visit=visit)
@@ -546,7 +546,7 @@ class ChildPredicates(PredicateCollection):
                 infant_feeding_crf, 'continuing_to_bf', None)
 
             return continuing_to_bf == YES or (continuing_to_bf == NO and not
-            hiv_test_6wks_post_wean)
+                                               hiv_test_6wks_post_wean)
 
         return False
 
@@ -599,6 +599,61 @@ class ChildPredicates(PredicateCollection):
             visit_code_sequence=0).order_by('timepoint').last()
 
         return previous_appt or appointment.previous_by_timepoint
+
+    def func_child_tb_screening_required(self, visit=None, **kwargs):
+        """Returns true if child tb screening is required
+        """
+        child_tb_scrining_model = f'{self.app_label}.childtbscreening'
+        child_tb_scrining_model_cls = django_apps.get_model(
+            child_tb_scrining_model)
+        latest_obj = child_tb_scrining_model_cls.objects.filter(
+            child_visit__subject_identifier=visit.subject_identifier
+        ).order_by('-report_datetime').first()
+        tests = ['chest_xray_results',
+                 'sputum_sample_results',
+                 'blood_test_results',
+                 'urine_test_results',
+                 'skin_test_results']
+        return any([getattr(latest_obj, field, None) == PENDING
+                    for field in tests]) if latest_obj else True
+
+    def func_heu_status_disclosed(self, visit, **kwargs):
+        child_subject_identifier = visit.subject_identifier
+        is_biological = child_utils.is_bio_mother(child_subject_identifier)
+
+        disclosure_crfs = ['flourish_caregiver.hivdisclosurestatusa',
+                           'flourish_caregiver.hivdisclosurestatusb',
+                           'flourish_caregiver.hivdisclosurestatusc']
+
+        for crf in disclosure_crfs:
+            model_cls = django_apps.get_model(crf)
+            disclosed_status = model_cls.objects.filter(
+                associated_child_identifier=visit.subject_identifier,
+                disclosed_status=YES).exists()
+            if disclosed_status:
+                return is_biological and self.func_hiv_exposed(visit)
+
+    def func_child_social_work_referral_required(self, visit=None, **kwargs):
+        """Returns true if child Social _work referral crf is required
+        """
+        child_cage_aid_model_cls = django_apps.get_model(
+            f'{self.app_label}.childcageaid')
+        try:
+            cage_obj = child_cage_aid_model_cls.objects.get(
+                child_visit__subject_identifier=visit.subject_identifier
+            )
+        except child_cage_aid_model_cls.DoesNotExist:
+            pass
+        else:
+            return (
+                cage_obj.alcohol_drugs == YES or
+                cage_obj.cut_down == YES or
+                cage_obj.people_reaction == YES or
+                cage_obj.guilt == YES or
+                cage_obj.eye_opener == YES
+
+            )
+        return False
 
     def hiv_test_required(self, child_age, visit):
         try:
@@ -671,7 +726,7 @@ class ChildPredicates(PredicateCollection):
 
         if prev_child_tb_referral_objs.exists():
             return prev_child_tb_referral_objs.count() > \
-                prev_child_tb_referral_outcome_objs.count()
+                   prev_child_tb_referral_outcome_objs.count()
         return False
 
     def func_child_tb_referral_required(self, visit=None, **kwargs):
@@ -687,57 +742,3 @@ class ChildPredicates(PredicateCollection):
             return False
         else:
             return visit_obj.tb_diagnoses
-
-    def func_heu_status_disclosed(self, visit, **kwargs):
-        child_subject_identifier = visit.subject_identifier
-        is_biological = child_utils.is_bio_mother(child_subject_identifier)
-
-        disclosure_crfs = ['flourish_caregiver.hivdisclosurestatusa',
-                           'flourish_caregiver.hivdisclosurestatusb',
-                           'flourish_caregiver.hivdisclosurestatusc']
-
-        for crf in disclosure_crfs:
-            model_cls = django_apps.get_model(crf)
-            disclosed_status = model_cls.objects.filter(
-                associated_child_identifier=visit.subject_identifier,
-                disclosed_status=YES).exists()
-            if disclosed_status:
-                return is_biological and self.func_hiv_exposed(visit)
-
-    def func_child_social_work_referral_required(self, visit=None, **kwargs):
-        """Returns true if child Social _work referral crf is required
-        """
-        child_cage_aid_model_cls = django_apps.get_model(
-            f'{self.app_label}.childcageaid')
-        try:
-            cage_obj = child_cage_aid_model_cls.objects.get(
-                child_visit__subject_identifier=visit.subject_identifier
-            )
-        except child_cage_aid_model_cls.DoesNotExist:
-            pass
-        else:
-            return (
-                    cage_obj.alcohol_drugs == YES or
-                    cage_obj.cut_down == YES or
-                    cage_obj.people_reaction == YES or
-                    cage_obj.guilt == YES or
-                    cage_obj.eye_opener == YES
-
-            )
-        return False
-
-    def func_childhood_lead_exposure_risk_required(self, visit=None, **kwargs):
-        childhood_lead_exposure_risk_model = f'{self.app_label}.childhoodleadexposurerisk'
-        prev_instance = self.previous_model(visit=visit,
-                                            model=childhood_lead_exposure_risk_model)
-        is_follow_up = '300' in visit.visit_code
-
-        if prev_instance:
-            visit_definition = visit.appointment.visits.get(visit.appointment.visit_code)
-            earlist_appt_date = (visit.appointment.timepoint_datetime -
-                                 visit_definition.rlower).astimezone(
-                pytz.timezone('Africa/Gaborone'))
-            return (earlist_appt_date - prev_instance.report_datetime) > timedelta(
-                days=365)
-        else:
-            return is_follow_up
